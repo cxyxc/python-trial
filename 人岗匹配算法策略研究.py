@@ -10,13 +10,13 @@
     ### 特征选取
         ### 根据现实情况选择部分显著特征，每种特征根据情况折算得分，得分高于 80 的认为最终可以上岗成功（这里把特征总结成枚举项，便于随机生成）
         ### 特征之间可能相互影响，如家庭背景影响薪资权重，婚姻状况影响上班耗时权重（暂不考虑）
-        ### 后续补充权重计算【可能应该折算成薪资后的数额进行】
+        ### 后续补充权重计算【可能应该按折算成薪资后的数额进行】
     ### 数据来源
-        ### 不依赖外部数据，由现有逻辑生成随机数据源
-        ### 数据源足够大时(约为 2000 条即可)，可让 AI 掌握由人类总结的逻辑
+        ### 没有足够外部数据，就由逻辑生成随机数据源
+        ### 数据源足够大时，可让 AI 掌握由人类总结的逻辑
         ### 此时输出结果应与现有逻辑匹配保持一致
     ### 后续业务数据集成
-        ### 最终上岗的业务数据可以直接与生成的随机数据源混合【暂定30%的数据采用真实业务数据】，训练后查看结果，如果仍获得较高拟合度，则认为我们总结的特征及权重符合实际。如果发现拟合度较低，分析原因
+        ### 最终上岗的业务数据可以直接与生成的随机数据源混合，训练后查看结果，如果仍获得较高拟合度，则认为我们总结的特征及权重符合实际。如果发现拟合度较低，分析原因
         ### 后续持续更换特征，迭代找出更合适的模型
         ### 着重分析最终上岗数据中的较低分值的数据，发掘其中隐藏的特征
 
@@ -25,6 +25,26 @@
 # 按照以下逻辑生成数据作为基础数据，表达逻辑匹配推荐算法
 # 基准逻辑算法
 dict_raws_base = {
+    # 性别
+    # 0 岗位有硬性要求 人员不符合
+    # 1 岗位有期望要求 人员不符合
+    # 2 岗位有期望要求 人员符合
+    # 3 岗位无要求
+    # 4 岗位有硬性要求 人员符合
+    'gender': {
+        'high': 5,
+        'score': [-10000, 0, 100, 100, 120],
+    },
+    # 时间匹配度（PS：时间匹配度的概念是由人的时间与岗位需要之间时间矩阵的交集，情况复杂，需要独立算法单独计算，此处不展开）
+    # 1 / 7 是 14.25%
+    # 0 <15%
+    # 1 >=15% <60%
+    # 2 >=60% <90%
+    # 3 >90%
+    'time_match_rate': {
+        'high': 4,
+        'score': [-10000, 0, 60, 100],
+    },
     # 职位类别 
     # 0 非常不满意
     # 1 不满意
@@ -97,7 +117,7 @@ def get_df(dict_raws, size):
     df=pd.DataFrame(df_raws, columns=columns)
     return df
 
-df_mock = get_df(dict_raws_base, 2000)
+df_mock = get_df(dict_raws_base, 20000)
 df_mock["score"] = df_mock.apply(lambda d:get_score(d, dict_raws_base),axis =1)
 df_mock["score_rate"] = df_mock.apply(lambda d:get_score_rate(d, 'score'),axis =1)
 # 模拟数据
@@ -111,18 +131,29 @@ from sklearn.ensemble import RandomForestClassifier
 def get_modal(df_data):
     data = df_data[columns].values
     target = df_data["score_rate"].values
-    Xtrain, Xtest, Ytrain, Ytest = train_test_split(data,target,test_size=0.3)
+    x_train, x_test, y_train, y_test = train_test_split(data,target,test_size=0.3)
     r_lf = RandomForestClassifier(random_state=0)
-    r_lf = r_lf.fit(Xtrain,Ytrain)
-    r_score = r_lf.score(Xtest,Ytest)
+    r_lf = r_lf.fit(x_train,y_train)
+    r_score = r_lf.score(x_test,y_test)
     # 得到 1.0 评分认为是机器学习模型可以正确的学会基准逻辑，认为随机模拟的数据量已经足够
-    print("Random Forest:{}".format(r_score))
+    print("随机森林模型评分:{}".format(r_score))
+    importances = r_lf.feature_importances_
+    indices = np.argsort(importances)[::-1]
+    feat_labels = df_data.columns[0:]
+    print('特征重要性分析:')
+    for f in range(x_train.shape[1]):
+        print("%2d) %-*s %f" % (f + 1, 30, feat_labels[indices[f]], importances[indices[f]]))
     return r_lf
 df_mock_modal = get_modal(df_mock)
 
 
 # %%
-print(df_mock_modal.predict([[2,3,3,3]]))
+# 结果预测测试
+print(df_mock_modal.predict([
+    [0,0,0,0,0,0],
+    [1,1,1,1,1,1],
+    [3,3,3,3,3,3],
+]))
 
 
 # %%
@@ -139,28 +170,73 @@ code = m2c.export_to_java(df_mock_modal)
 # 鉴别漏损数据的过程，可能会形成新的关键特征。如果特征调整，需要使用现有已上岗数据对策略进行回测（不展开讨论）
 # 漏损数据符合的得分模型假定如下（实际上我们不知道具体的漏损数据模型，但是有漏损数据，这里定义模型来生成数据）
 dict_raws_busi = {
+    # 性别
+    # 0 岗位有硬性要求 人员不符合
+    # 1 岗位有期望要求 人员不符合
+    # 2 岗位有期望要求 人员符合
+    # 3 岗位无要求
+    # 4 岗位有硬性要求 人员符合
+    'gender': {
+        'high': 5,
+        'score': [0, 0, 100, 100, 120],
+    },
+    # 时间匹配度（PS：时间匹配度的概念是由人的时间与岗位需要之间时间矩阵的交集，情况复杂，需要独立算法单独计算，此处不展开）
+    # 1 / 7 是 14.25%
+    # 0 <15%
+    # 1 >=15% <60%
+    # 2 >=60% <90%
+    # 3 >90%
+    'time_match_rate': {
+        'high': 4,
+        'score': [0, 0, 60, 100],
+    },
+    # 职位类别 
+    # 0 非常不满意
+    # 1 不满意
+    # 2 满意
     'job_categories': {
-        'score': [0, 0, 100],
+        'high': 3,
+        'score': [0, 60, 100],
     },
+    # 缴金
+    # 0 公司不缴纳+用户在乎
+    # 1 公司缴纳+用户不在乎
+    # 2 公司缴纳+用户在乎
+    # 3 公司不缴纳+用户不在乎
     'insurance': {
-        'score': [0, 100, 60, 100],
+        'high': 4,
+        'score': [0, 30, 60, 100],
     },
+    # 薪资+福利(包吃住等)
+    # 0 薪资低于预期+无福利
+    # 1 薪资低于预期+有福利
+    # 2 薪资达到预期+无福利
+    # 3 薪资达到预期+有福利
     'benefits': {
-        'score': [0, 80, 60, 100],
+        'high': 4,
+        'score': [0, 40, 100, 100],
     },
+    # 上班耗时
+    # 0 超过2小时
+    # 1 超过1小时
+    # 2 40分钟以内
+    # 3 20分钟以内
     'go_work_time': {
-        'score': [0, 40, 0, 100],
+        'high': 4,
+        'score': [0, 50, 80, 200],
     },
 }
 
-df_busi = get_df(dict_raws_base, 2000)
+
+# %%
+df_busi = get_df(dict_raws_base, 60000)
 # 基准模型评分
 df_busi["score"] = df_busi.apply(lambda d:get_score(d, dict_raws_base),axis =1)
 df_busi["score_rate"] = df_busi.apply(lambda d:get_score_rate(d, 'score'),axis =1)
 # 真实模型评分
 df_busi["busi_score"] = df_busi.apply(lambda d:get_score(d, dict_raws_busi),axis =1)
 df_busi["busi_score_rate"] = df_busi.apply(lambda d:get_score_rate(d, 'busi_score'),axis =1)
-# 过滤出基准模型评分等级为 0 但漏损模型评分等级为 2 的数据。即已上岗但未能推荐，反之假定为明确表示不合适的岗，这两者之间应该大体均等
+# 过滤出基准模型评分等级为 0 但漏损模型评分等级为 2 的数据。即已上岗但未能推荐，反之假定为明确表示不合适的岗，这两者之间应该大体均等（或者标准模型评分为 1 但已上岗应该纠正为 2？）
 # 样本量级比较小，本身作为训练集很容易出现过拟合
 # df_busi_no 的数据在真实业务中难以排查
 df_busi_yes = df_busi.query('score_rate==0 & busi_score_rate==2')
@@ -174,13 +250,12 @@ df_busi
 df_busi['score'] = df_busi['busi_score']
 df_busi['score_rate'] = df_busi['busi_score_rate']
 df_busi = df_busi.drop(columns=['busi_score', 'busi_score_rate'])
-df_busi
 
 
 # %%
 # 直接用业务数据训练模型，发现找不到规律？此处如果已经找到规律了，直接使用即可，真实的业务数据由于特征数量不足，不推荐岗位(评级为0)的数据难以界定，应该难以找到规律，如果能找到规律，全篇都可以理解为废话了。
 df_busi_modal = get_modal(df_busi)
-df_busi_modal.predict([[0,0,0,0]]) # 只有上岗数据训练出来的模型，得到的结论永远都是 0
+df_busi_modal.predict([[0,0,0,0,0,0]]) # 只有上岗数据训练出来的模型，得到的结论永远都是 2
 
 
 # %%
@@ -190,12 +265,12 @@ df_combine
 
 
 # %%
-# 重新训练生成模型，发现模型有 99.5% 的得分，说明数据仍有规律可寻，我们距离真实模型正在靠近？
+# 重新训练生成模型，如果评分较高说明数据仍有规律可寻，我们距离真实模型正在靠近？
 df_combine_modal = get_modal(df_combine)
 
 
 # %%
-# 这些是被认为不能上岗，未进行推荐的数据，现在的模型下已经推荐上岗了
+# 这些是被认为不能上岗，未进行推荐的数据，现在的模型下有可能已经推荐上岗了
 df_combine_modal.predict(df_busi_yes[columns].values)
 
 
